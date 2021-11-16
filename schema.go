@@ -20,7 +20,7 @@ type Adapter interface {
 type Schema struct{}
 type Model struct {
 	UserID    gocql.UUID `json:"user_id"`
-	M         string     `json:"m"`
+	M         map[string]interface{}
 	createdAt time.Time
 }
 
@@ -55,8 +55,8 @@ func (s Schema) MappingData(topic string, msg *message.Message) (string, []inter
 
 // UnmarshalMessage unmarshalling select query
 func (s Schema) UnmarshalMessage(rows *sql.Rows) (msg *message.Message, err error) {
-	var result Model
-	err = rows.Scan(&result.UserID, &result.M)
+	var result map[string]interface{}
+	err = rows.Scan( 	)
 	if err != nil {
 		return nil, err
 	}

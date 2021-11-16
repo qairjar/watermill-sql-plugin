@@ -8,7 +8,7 @@ import (
 	"github.com/ThreeDotsLabs/watermill"
 	"github.com/ThreeDotsLabs/watermill-sql/pkg/sql"
 	"github.com/ThreeDotsLabs/watermill/message"
-	"strings"
+	"io/ioutil"
 	"sync"
 	"time"
 )
@@ -17,7 +17,7 @@ type Subscriber struct {
 	closed        bool
 	subscribeWg   *sync.WaitGroup
 	closing       chan struct{}
-	SelectQuery   string
+	SelectPath   string
 	logger        watermill.LoggerAdapter
 	consumerGroup string
 	config        sql.SubscriberConfig
@@ -80,11 +80,6 @@ func (s *Subscriber) consume(
 	ctx context.Context,
 	out chan *message.Message,
 ) {
-	if !strings.Contains(s.SelectQuery, "where") {
-		s.SelectQuery += " where"
-	} else {
-		s.SelectQuery += " and"
-	}
 	for {
 		s.query(ctx, out)
 		time.Sleep(s.TimeDuration)
@@ -92,14 +87,18 @@ func (s *Subscriber) consume(
 }
 
 func (s *Subscriber) query(ctx context.Context,
-	out chan *message.Message) {
-	t := time.Now()
-	query := fmt.Sprintf(`%s created_at >= '%s' and created_at <= '%s' ALLOW FILTERING`, s.SelectQuery, t.Add(-s.TimeDuration).Format(time.RFC3339), t.Format(time.RFC3339))
+	out chan *message.Message){
 	ctx, cancel := context.WithTimeout(ctx, 55*time.Second)
 	defer cancel()
-	rows, err := s.DB.QueryContext(ctx, query)
+	query, err := ioutil.ReadFile(s.SelectPath)
+	if err != nil {
+		s.logger.Error("QueryContext:", err, nil)
+		return
+	}
+	rows, err := s.DB.QueryContext(ctx, string(query))
 	if err != nil {
 		s.logger.Error("QueryContext error is not nil:", err, nil)
+		return
 	}
 	defer func(rows *stdSQL.Rows) {
 		err = rows.Close()
