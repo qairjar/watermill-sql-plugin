@@ -17,7 +17,7 @@ type Subscriber struct {
 	closed        bool
 	subscribeWg   *sync.WaitGroup
 	closing       chan struct{}
-	SelectPath   string
+	SelectPath    string
 	logger        watermill.LoggerAdapter
 	consumerGroup string
 	config        sql.SubscriberConfig
@@ -25,6 +25,8 @@ type Subscriber struct {
 	scyllaSchema  Adapter
 	TimeDuration  time.Duration
 }
+
+var Args []interface{}
 
 // NewSubscriber create watermill subscriber module
 func (s *Subscriber) NewSubscriber(adapter Adapter, logger watermill.LoggerAdapter) (*Subscriber, error) {
@@ -87,7 +89,7 @@ func (s *Subscriber) consume(
 }
 
 func (s *Subscriber) query(ctx context.Context,
-	out chan *message.Message){
+	out chan *message.Message) {
 	ctx, cancel := context.WithTimeout(ctx, 55*time.Second)
 	defer cancel()
 	query, err := ioutil.ReadFile(s.SelectPath)
@@ -95,17 +97,21 @@ func (s *Subscriber) query(ctx context.Context,
 		s.logger.Error("QueryContext:", err, nil)
 		return
 	}
-	rows, err := s.DB.QueryContext(ctx, string(query))
+	prep, err := s.DB.PrepareContext(ctx, string(query))
 	if err != nil {
 		s.logger.Error("QueryContext error is not nil:", err, nil)
 		return
 	}
-	defer func(rows *stdSQL.Rows) {
-		err = rows.Close()
+	defer func(prep *stdSQL.Stmt) {
+		err = prep.Close()
 		if err != nil {
 			s.logger.Error(err.Error(), err, nil)
 		}
-	}(rows)
+	}(prep)
+
+
+	rows, err := prep.Query(Args)
+
 	for rows.Next() {
 		msg, err := s.scyllaSchema.UnmarshalMessage(rows)
 
