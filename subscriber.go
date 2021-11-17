@@ -38,6 +38,7 @@ func (s *Subscriber) NewSubscriber(adapter Adapter, logger watermill.LoggerAdapt
 		logger = watermill.NopLogger{}
 	}
 
+	
 	if adapter == nil {
 		var schema Schema
 		adapter = schema
