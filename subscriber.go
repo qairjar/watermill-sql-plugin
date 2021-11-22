@@ -8,7 +8,8 @@ import (
 	"github.com/ThreeDotsLabs/watermill"
 	"github.com/ThreeDotsLabs/watermill-sql/pkg/sql"
 	"github.com/ThreeDotsLabs/watermill/message"
-	"io/ioutil"
+	"github.com/qairjar/kafka-deduplication"
+	"net/url"
 	"sync"
 	"time"
 )
@@ -17,16 +18,53 @@ type Subscriber struct {
 	closed        bool
 	subscribeWg   *sync.WaitGroup
 	closing       chan struct{}
-	SelectPath    string
+	SelectQuery   string
 	logger        watermill.LoggerAdapter
 	consumerGroup string
 	config        sql.SubscriberConfig
 	DB            *stdSQL.DB
 	scyllaSchema  Adapter
 	TimeDuration  time.Duration
+	Brokers       string
+	KafkaTopic    string
 }
 
-var Args []interface{}
+var cacheBuilder kafkadeduplication.CacheBuilder
+
+func (s *Subscriber) InitCache(connection string) (string, error) {
+	uri, err := url.Parse(connection)
+	if err != nil {
+		return "", err
+	}
+	queryURI := uri.Query()
+	window := kafkadeduplication.CacheBuilder{}
+	if len(queryURI.Get("from-time")) > 0 {
+		window.From, err = time.Parse(time.RFC3339, queryURI.Get("from-time"))
+		if err != nil {
+			return "", err
+		}
+	}
+	queryURI.Del("from-time")
+
+	if len(queryURI.Get("to-time")) > 0 {
+		window.To, err = time.Parse(time.RFC3339, queryURI.Get("to-time"))
+		if err != nil {
+			return "", err
+		}
+	}
+	if len(queryURI.Get("init-from")) > 0 {
+		window.InitFrom, err = time.Parse(time.RFC3339, queryURI.Get("init-from"))
+		if err != nil {
+			return "", err
+		}
+	}
+	queryURI.Del("init-from")
+	cacheBuilder = window
+
+	cacheBuilder.ArgsBuilder()
+
+	return uri.String(), err
+}
 
 // NewSubscriber create watermill subscriber module
 func (s *Subscriber) NewSubscriber(adapter Adapter, logger watermill.LoggerAdapter) (*Subscriber, error) {
@@ -38,7 +76,6 @@ func (s *Subscriber) NewSubscriber(adapter Adapter, logger watermill.LoggerAdapt
 		logger = watermill.NopLogger{}
 	}
 
-	
 	if adapter == nil {
 		var schema Schema
 		adapter = schema
@@ -66,7 +103,6 @@ func (s Subscriber) Subscribe(ctx context.Context, topic string) (<-chan *messag
 	}()
 	return out, nil
 }
-
 func (s *Subscriber) Close() error {
 	if s.closed {
 		return nil
@@ -85,20 +121,17 @@ func (s *Subscriber) consume(
 ) {
 	for {
 		s.query(ctx, out)
-		time.Sleep(s.TimeDuration)
+		delay := time.Until(cacheBuilder.To) + cacheBuilder.Lag
+		if delay > 0 {
+			time.Sleep(delay)
+		}
 	}
 }
-
 func (s *Subscriber) query(ctx context.Context,
 	out chan *message.Message) {
 	ctx, cancel := context.WithTimeout(ctx, 55*time.Second)
 	defer cancel()
-	query, err := ioutil.ReadFile(s.SelectPath)
-	if err != nil {
-		s.logger.Error("QueryContext:", err, nil)
-		return
-	}
-	prep, err := s.DB.PrepareContext(ctx, string(query))
+	prep, err := s.DB.PrepareContext(ctx, s.SelectQuery)
 	if err != nil {
 		s.logger.Error("QueryContext error is not nil:", err, nil)
 		return
@@ -110,8 +143,7 @@ func (s *Subscriber) query(ctx context.Context,
 		}
 	}(prep)
 
-
-	rows, err := prep.Query(Args)
+	rows, err := prep.Query(cacheBuilder.From, cacheBuilder.To)
 
 	for rows.Next() {
 		msg, err := s.scyllaSchema.UnmarshalMessage(rows)
