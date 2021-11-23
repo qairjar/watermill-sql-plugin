@@ -125,6 +125,8 @@ func (s *Subscriber) consume(
 		if delay > 0 {
 			time.Sleep(delay)
 		}
+		cacheBuilder.From = cacheBuilder.To
+		cacheBuilder.To = time.Now()
 	}
 }
 func (s *Subscriber) query(ctx context.Context,
