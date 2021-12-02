@@ -2,17 +2,17 @@ package sqlplugin
 
 import (
 	"context"
-	stdSQL "database/sql"
+	sql2 "database/sql"
 	"errors"
-	"fmt"
 	"github.com/ThreeDotsLabs/watermill"
 	"github.com/ThreeDotsLabs/watermill-sql/pkg/sql"
 	"github.com/ThreeDotsLabs/watermill/message"
+	stdSQL "github.com/jmoiron/sqlx"
 	"github.com/qairjar/kafka-deduplication"
-	"net/url"
 	"sync"
 	"time"
 )
+
 
 type Subscriber struct {
 	closed        bool
@@ -27,47 +27,18 @@ type Subscriber struct {
 	TimeDuration  time.Duration
 	Brokers       string
 	KafkaTopic    string
+	Args          map[string]interface{}
+	Window        Window
+	cache 		  []map[string]interface{}
 }
 
-var cacheBuilder kafkadeduplication.CacheBuilder
-
-func (s *Subscriber) InitCache(connection string) (string, error) {
-	uri, err := url.Parse(connection)
-	if err != nil {
-		return "", err
-	}
-	queryURI := uri.Query()
-	window := kafkadeduplication.CacheBuilder{}
-	if len(queryURI.Get("from-time")) > 0 {
-		window.From, err = time.Parse(time.RFC3339, queryURI.Get("from-time"))
-		if err != nil {
-			return "", err
-		}
-	}
-	queryURI.Del("from-time")
-
-	if len(queryURI.Get("to-time")) > 0 {
-		window.To, err = time.Parse(time.RFC3339, queryURI.Get("to-time"))
-		if err != nil {
-			return "", err
-		}
-	}
-	if len(queryURI.Get("init-from")) > 0 {
-		window.InitFrom, err = time.Parse(time.RFC3339, queryURI.Get("init-from"))
-		if err != nil {
-			return "", err
-		}
-	}
-	queryURI.Del("init-from")
-	cacheBuilder = window
-
-	cacheBuilder.ArgsBuilder()
-
-	return uri.String(), err
+type Window struct {
+	InitFrom time.Duration
+	Lag      time.Duration
 }
 
 // NewSubscriber create watermill subscriber module
-func (s *Subscriber) NewSubscriber(adapter Adapter, logger watermill.LoggerAdapter) (*Subscriber, error) {
+func (s *Subscriber) NewSubscriber(adapter Adapter, logger watermill.LoggerAdapter, saramaConfig *kafkadeduplication.SaramaConfig) (*Subscriber, error) {
 	if s.DB == nil {
 		return nil, errors.New("db is nil")
 	}
@@ -80,6 +51,11 @@ func (s *Subscriber) NewSubscriber(adapter Adapter, logger watermill.LoggerAdapt
 		var schema Schema
 		adapter = schema
 	}
+	cache
+
+	if err != nil {
+		return nil, err
+	}
 
 	sub := &Subscriber{
 		config:       config,
@@ -87,6 +63,7 @@ func (s *Subscriber) NewSubscriber(adapter Adapter, logger watermill.LoggerAdapt
 		subscribeWg:  &sync.WaitGroup{},
 		closing:      make(chan struct{}),
 		logger:       logger,
+		Cache: saramaConfig.Msgs,
 	}
 	return sub, nil
 }
@@ -119,39 +96,49 @@ func (s *Subscriber) consume(
 	ctx context.Context,
 	out chan *message.Message,
 ) {
-	for {
-		s.query(ctx, out)
-		delay := time.Until(cacheBuilder.To) + cacheBuilder.Lag
-		if delay > 0 {
-			time.Sleep(delay)
-		}
-		cacheBuilder.From = cacheBuilder.To
-		cacheBuilder.To = time.Now()
-	}
-}
-func (s *Subscriber) query(ctx context.Context,
-	out chan *message.Message) {
-	ctx, cancel := context.WithTimeout(ctx, 55*time.Second)
-	defer cancel()
 	prep, err := s.DB.PrepareContext(ctx, s.SelectQuery)
 	if err != nil {
 		s.logger.Error("QueryContext error is not nil:", err, nil)
 		return
 	}
-	defer func(prep *stdSQL.Stmt) {
-		err = prep.Close()
+	defer func(prep *sql2.Stmt) {
+		err := prep.Close()
 		if err != nil {
-			s.logger.Error(err.Error(), err, nil)
+			s.logger.Error("QueryContext error is not nil:", err, nil)
 		}
 	}(prep)
+	if err != nil {
+		return
+	}
+	var to time.Time
+	for {
+		s.query(ctx, prep, out)
+		delay := time.Until(to.Add(s.Window.Lag))
+		if delay > 0 {
+			time.Sleep(delay)
+		}
+		s.Args["from"] = to
+		to = time.Now()
+		s.Args["to"] = time.Now()
+	}
+}
 
-	rows, err := prep.Query(cacheBuilder.From, cacheBuilder.To)
-
+//query function for close rows connection
+func (s *Subscriber) query(ctx context.Context, prep *sql2.Stmt, out chan *message.Message) {
+	rows, err := prep.Query(s.Args)
+	defer func(rows *sql2.Rows) {
+		err = rows.Close()
+		if err != nil {
+			s.logger.Error("QueryContext Rows error is not nil:", err, nil)
+		}
+	}(rows)
+	if err != nil {
+		s.logger.Error("QueryContext Rows error is not nil:", err, nil)
+	}
 	for rows.Next() {
 		msg, err := s.scyllaSchema.UnmarshalMessage(rows)
-
 		if err != nil {
-			fmt.Println("QueryContext error is not nil:", err)
+			s.logger.Error("QueryContext Rows error is not nil:", err, nil)
 		}
 		s.sendMessage(ctx, msg, out)
 	}
@@ -195,9 +182,7 @@ ResendLoop:
 			if s.config.ResendInterval != 0 {
 				time.Sleep(s.config.ResendInterval)
 			}
-
 			continue ResendLoop
-
 		case <-s.closing:
 			logger.Info("Discarding queued message, subscriber closing", nil)
 			return false
