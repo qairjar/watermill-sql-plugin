@@ -4,6 +4,7 @@ import (
 	"context"
 	sql2 "database/sql"
 	"errors"
+	"fmt"
 	"github.com/ThreeDotsLabs/watermill"
 	"github.com/ThreeDotsLabs/watermill-sql/pkg/sql"
 	"github.com/ThreeDotsLabs/watermill/message"
@@ -12,7 +13,6 @@ import (
 	"sync"
 	"time"
 )
-
 
 type Subscriber struct {
 	closed        bool
@@ -29,11 +29,11 @@ type Subscriber struct {
 	KafkaTopic    string
 	Args          map[string]interface{}
 	Window        Window
-	cache 		  []map[string]interface{}
+	Cache         kafkadeduplication.Cache
 }
 
 type Window struct {
-	InitFrom time.Duration
+	InitFrom time.Time
 	Lag      time.Duration
 }
 
@@ -51,8 +51,8 @@ func (s *Subscriber) NewSubscriber(adapter Adapter, logger watermill.LoggerAdapt
 		var schema Schema
 		adapter = schema
 	}
-	cache
-
+	var cache kafkadeduplication.Cache
+	err := cache.CacheBuilder(saramaConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +63,7 @@ func (s *Subscriber) NewSubscriber(adapter Adapter, logger watermill.LoggerAdapt
 		subscribeWg:  &sync.WaitGroup{},
 		closing:      make(chan struct{}),
 		logger:       logger,
-		Cache: saramaConfig.Msgs,
+		Cache:        cache,
 	}
 	return sub, nil
 }
@@ -110,20 +110,31 @@ func (s *Subscriber) consume(
 	if err != nil {
 		return
 	}
-	var to time.Time
+	var from, to time.Time
+
+	from = s.Window.InitFrom
+
+	if from.IsZero() {
+		err, from = s.Cache.GetLastTimestamp()
+		if err != nil {
+			s.logger.Error("QueryContext error is not nil:", err, nil)
+		}
+	}
+
 	for {
+		s.Args["from"] = from
+		s.Args["to"] = to
 		s.query(ctx, prep, out)
 		delay := time.Until(to.Add(s.Window.Lag))
 		if delay > 0 {
 			time.Sleep(delay)
 		}
-		s.Args["from"] = to
+		from = to
 		to = time.Now()
-		s.Args["to"] = time.Now()
 	}
 }
 
-//query function for close rows connection
+// query function for close rows connection
 func (s *Subscriber) query(ctx context.Context, prep *sql2.Stmt, out chan *message.Message) {
 	rows, err := prep.Query(s.Args)
 	defer func(rows *sql2.Rows) {
@@ -136,10 +147,15 @@ func (s *Subscriber) query(ctx context.Context, prep *sql2.Stmt, out chan *messa
 		s.logger.Error("QueryContext Rows error is not nil:", err, nil)
 	}
 	for rows.Next() {
-		msg, err := s.scyllaSchema.UnmarshalMessage(rows)
+		m := make(map[string]interface{})
+		err = rows.Scan(&m)
 		if err != nil {
 			s.logger.Error("QueryContext Rows error is not nil:", err, nil)
 		}
+		if s.Cache.EqualMsg(m) {
+			continue
+		}
+		msg := message.NewMessage(watermill.NewULID(), []byte(fmt.Sprintf("%v", m)))
 		s.sendMessage(ctx, msg, out)
 	}
 }

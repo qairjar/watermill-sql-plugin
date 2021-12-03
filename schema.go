@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"github.com/ThreeDotsLabs/watermill"
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/gocql/gocql"
 	"strings"
@@ -55,11 +54,6 @@ func (s Schema) MappingData(topic string, msg *message.Message) (string, []inter
 
 // UnmarshalMessage unmarshalling select query
 func (s Schema) UnmarshalMessage(rows *sql.Rows) (msg *message.Message, err error) {
-	var result map[string]interface{}
-	err = rows.Scan( 	)
-	if err != nil {
-		return nil, err
-	}
-	msg = message.NewMessage(watermill.NewULID(), []byte(fmt.Sprintf("%v", result)))
+
 	return msg, nil
 }

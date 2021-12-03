@@ -13,7 +13,7 @@ require (
 	github.com/jmoiron/sqlx v1.3.4
 	github.com/lithammer/shortuuid/v3 v3.0.7 // indirect
 	github.com/pkg/errors v0.9.1
-	github.com/qairjar/kafka-deduplication v0.0.0-20211130024705-012a60a10bd5
+	github.com/qairjar/kafka-deduplication v0.0.0-20211202035149-f3ff7a59aadf
 	go.opentelemetry.io/otel v1.2.0
 	go.opentelemetry.io/otel/metric v0.25.0
 	go.opentelemetry.io/otel/trace v1.2.0
