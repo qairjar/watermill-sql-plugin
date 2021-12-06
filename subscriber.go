@@ -2,7 +2,6 @@ package sqlplugin
 
 import (
 	"context"
-	sql2 "database/sql"
 	"errors"
 	"fmt"
 	"github.com/ThreeDotsLabs/watermill"
@@ -51,18 +50,25 @@ func (s *Subscriber) NewSubscriber(adapter Adapter, logger watermill.LoggerAdapt
 		var schema Schema
 		adapter = schema
 	}
+
 	var cache kafkadeduplication.Cache
-	err := cache.CacheBuilder(saramaConfig)
-	if err != nil {
-		return nil, err
+	if len(saramaConfig.Brokers) > 0 {
+		err := cache.CacheBuilder(saramaConfig)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	sub := &Subscriber{
+		DB:           s.DB,
+		SelectQuery:  s.SelectQuery,
 		config:       config,
 		scyllaSchema: adapter,
 		subscribeWg:  &sync.WaitGroup{},
 		closing:      make(chan struct{}),
 		logger:       logger,
+		Args:         make(map[string]interface{}),
+		Window:       s.Window,
 		Cache:        cache,
 	}
 	return sub, nil
@@ -96,35 +102,21 @@ func (s *Subscriber) consume(
 	ctx context.Context,
 	out chan *message.Message,
 ) {
-	prep, err := s.DB.PrepareContext(ctx, s.SelectQuery)
-	if err != nil {
-		s.logger.Error("QueryContext error is not nil:", err, nil)
-		return
-	}
-	defer func(prep *sql2.Stmt) {
-		err := prep.Close()
-		if err != nil {
-			s.logger.Error("QueryContext error is not nil:", err, nil)
-		}
-	}(prep)
-	if err != nil {
-		return
-	}
 	var from, to time.Time
 
 	from = s.Window.InitFrom
 
-	if from.IsZero() {
+	if from.IsZero() && s.Cache.Count > 0 {
+		var err error
 		err, from = s.Cache.GetLastTimestamp()
 		if err != nil {
 			s.logger.Error("QueryContext error is not nil:", err, nil)
 		}
 	}
-
 	for {
 		s.Args["from"] = from
 		s.Args["to"] = to
-		s.query(ctx, prep, out)
+		s.query(ctx, out)
 		delay := time.Until(to.Add(s.Window.Lag))
 		if delay > 0 {
 			time.Sleep(delay)
@@ -135,25 +127,28 @@ func (s *Subscriber) consume(
 }
 
 // query function for close rows connection
-func (s *Subscriber) query(ctx context.Context, prep *sql2.Stmt, out chan *message.Message) {
-	rows, err := prep.Query(s.Args)
-	defer func(rows *sql2.Rows) {
+func (s *Subscriber) query(ctx context.Context, out chan *message.Message) {
+	rows, err := s.DB.NamedQuery(s.SelectQuery, s.Args)
+	defer func(rows *stdSQL.Rows) {
 		err = rows.Close()
 		if err != nil {
 			s.logger.Error("QueryContext Rows error is not nil:", err, nil)
+			return
 		}
 	}(rows)
 	if err != nil {
 		s.logger.Error("QueryContext Rows error is not nil:", err, nil)
+		return
 	}
 	for rows.Next() {
 		m := make(map[string]interface{})
-		err = rows.Scan(&m)
+		err = rows.MapScan(m)
 		if err != nil {
 			s.logger.Error("QueryContext Rows error is not nil:", err, nil)
+			return
 		}
 		if s.Cache.EqualMsg(m) {
-			continue
+			return
 		}
 		msg := message.NewMessage(watermill.NewULID(), []byte(fmt.Sprintf("%v", m)))
 		s.sendMessage(ctx, msg, out)
