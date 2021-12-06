@@ -5,55 +5,42 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/ThreeDotsLabs/watermill/message"
-	"github.com/gocql/gocql"
 	"strings"
-	"time"
 )
 
 type Adapter interface {
-	MappingData(topic string, msg *message.Message) (string, []interface{}, error)
+	MappingData(topic string, msg *message.Message) (string, map[string]interface{}, error)
 	// UnmarshalMessage transforms the Row obtained SelectQuery a Watermill message.
 	UnmarshalMessage(rows *sql.Rows) (msg *message.Message, err error)
 }
 
 type Schema struct{}
-type Model struct {
-	UserID    gocql.UUID `json:"user_id"`
-	M         map[string]interface{}
-	createdAt time.Time
+
+type MsgBody struct{
+	After map[string]interface{}`json:"after"`
 }
 
-func (s Schema) MappingData(topic string, msg *message.Message) (string, []interface{}, error) {
-	data := make(map[string]interface{})
-	err := json.Unmarshal(msg.Payload, &data)
+func (s Schema) MappingData(topic string, msg *message.Message) (string, map[string]interface{}, error) {
+	var msgBody MsgBody
+	err := json.Unmarshal(msg.Payload, &msgBody)
 	if err != nil {
 		return "", nil, err
 	}
-	var insertKeys []string
-	var args []interface{}
-	i := 1
-	var columnCount string
-	for key, value := range data {
+	insertKeys := []string{}
+	for key := range msgBody.After {
 		insertKeys = append(insertKeys, key)
-		args = append(args, value)
-		if i != 1 {
-			columnCount += ","
-		}
-		columnCount += fmt.Sprintf("$%d", i)
-		i++
 	}
-
 	insertQuery := fmt.Sprintf(
-		`INSERT INTO %s (%s) VALUES (%s)`,
+		`INSERT INTO %s (%s) VALUES (:%s)`,
 		topic,
 		strings.Join(insertKeys, ","),
-		columnCount,
+		strings.Join(insertKeys, ",:"),
 	)
-	return insertQuery, args, nil
+	return insertQuery, msgBody.After, nil
 }
 
 // UnmarshalMessage unmarshalling select query
-func (s Schema) UnmarshalMessage(rows *sql.Rows) (msg *message.Message, err error) {
+func (s Schema) UnmarshalMessage(*sql.Rows) (msg *message.Message, err error) {
 
 	return msg, nil
 }

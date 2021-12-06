@@ -2,9 +2,9 @@ package sqlplugin
 
 import (
 	"context"
-	"database/sql"
 	"github.com/ThreeDotsLabs/watermill"
 	"github.com/ThreeDotsLabs/watermill/message"
+	"github.com/jmoiron/sqlx"
 	"github.com/pkg/errors"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -24,12 +24,13 @@ var (
 type Publisher struct {
 	Topic             string
 	schemaAdapter     Adapter
-	DB                *sql.DB
+	DB                *sqlx.DB
 	publishWg         *sync.WaitGroup
 	closeCh           chan struct{}
 	closed            bool
 	initializedTopics sync.Map
 	logger            watermill.LoggerAdapter
+	Query             string
 }
 
 func (c *Publisher) setDefaults() {
@@ -58,6 +59,7 @@ func (c *Publisher) NewPublisher(schema Adapter, logger watermill.LoggerAdapter)
 		closed:        false,
 		DB:            c.DB,
 		logger:        logger,
+		Query:         c.Query,
 	}, nil
 }
 
@@ -97,19 +99,14 @@ func (c *Publisher) Publish(topic string, messages ...*message.Message) (err err
 	return nil
 }
 func (c *Publisher) query(ctx context.Context, topic string, msg *message.Message) error {
-	var err error
-	insertQuery, args, err := c.schemaAdapter.MappingData(c.Topic, msg)
+	insertQuery, args, err :=  c.schemaAdapter.MappingData(topic, msg)
 	if err != nil {
-		c.logger.Error("could not mapping message", err, watermill.LogFields{
+		c.logger.Error("could not insert message as row", err, watermill.LogFields{
 			"topic": topic,
 		})
 		return err
 	}
-	c.logger.Trace("Inserting message to SQL", watermill.LogFields{
-		"query": insertQuery,
-		"args" : args,
-	})
-	_, err = c.DB.ExecContext(ctx, insertQuery, args...)
+	_, err = c.DB.NamedExec(insertQuery, args)
 	if err != nil {
 		c.logger.Error("could not insert message as row", err, watermill.LogFields{
 			"topic": topic,
@@ -118,6 +115,7 @@ func (c *Publisher) query(ctx context.Context, topic string, msg *message.Messag
 	}
 	return nil
 }
+
 // buildAttrs build otel attributes from watermill context data
 func buildAttrs(ctx context.Context) (processor, publisher []attribute.KeyValue) {
 	handler := attribute.String("watermill_handler", message.HandlerNameFromCtx(ctx))
