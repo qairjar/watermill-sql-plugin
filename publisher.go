@@ -6,6 +6,7 @@ import (
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/jmoiron/sqlx"
 	"github.com/pkg/errors"
+	"github.com/qairjar/watermill-sql-plugin/cache"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -31,6 +32,8 @@ type Publisher struct {
 	initializedTopics sync.Map
 	logger            watermill.LoggerAdapter
 	Query             string
+	Select            string
+	Cache             *cache.Cache
 }
 
 func (c *Publisher) setDefaults() {
@@ -52,6 +55,12 @@ func (c *Publisher) NewPublisher(schema Adapter, logger watermill.LoggerAdapter)
 		schema = schemaAdapter
 	}
 
+	pubCache, err := cache.InitCache(c.Select, c.DB)
+
+	if err != nil {
+		return nil, err
+	}
+
 	return &Publisher{
 		schemaAdapter: schema,
 		publishWg:     new(sync.WaitGroup),
@@ -60,6 +69,7 @@ func (c *Publisher) NewPublisher(schema Adapter, logger watermill.LoggerAdapter)
 		DB:            c.DB,
 		logger:        logger,
 		Query:         c.Query,
+		Cache: pubCache,
 	}, nil
 }
 
@@ -79,11 +89,11 @@ func (c *Publisher) Publish(topic string, messages ...*message.Message) (err err
 	for _, msg := range messages {
 		ctx := msg.Context()
 		_, pubAttr := buildAttrs(ctx)
-		spanCtx, span := tr.Start(ctx, "publish messages", trace.WithSpanKind(trace.SpanKindProducer))
+		_, span := tr.Start(ctx, "publish messages", trace.WithSpanKind(trace.SpanKindProducer))
 		span.SetAttributes(pubAttr...)
 		// Track processing complete
 		publishStart := time.Now()
-		err = c.query(spanCtx, topic, msg)
+		err = c.query(topic, msg)
 		if err != nil {
 			span.SetStatus(codes.Error, "failed to insert query into scylla")
 			span.RecordError(err)
@@ -98,15 +108,19 @@ func (c *Publisher) Publish(topic string, messages ...*message.Message) (err err
 	}
 	return nil
 }
-func (c *Publisher) query(ctx context.Context, topic string, msg *message.Message) error {
-	insertQuery, args, err :=  c.schemaAdapter.MappingData(topic, msg)
+func (c *Publisher) query(topic string, msg *message.Message) error {
+	args, err := c.schemaAdapter.MappingData(topic, msg)
 	if err != nil {
-		c.logger.Error("could not insert message as row", err, watermill.LogFields{
+		c.logger.Error("could not mapped message", err, watermill.LogFields{
 			"topic": topic,
 		})
 		return err
 	}
-	_, err = c.DB.NamedExec(insertQuery, args)
+	eq := c.Cache.EqualMsg(args)
+	if eq {
+		return nil
+	}
+	_, err = c.DB.NamedExec(c.Query, args)
 	if err != nil {
 		c.logger.Error("could not insert message as row", err, watermill.LogFields{
 			"topic": topic,
