@@ -109,7 +109,7 @@ func (c *Publisher) Publish(topic string, messages ...*message.Message) (err err
 	return nil
 }
 func (c *Publisher) query(topic string, msg *message.Message) error {
-	args, err := c.schemaAdapter.MappingData(topic, msg)
+	args, err := c.schemaAdapter.MappingData(topic,msg)
 	if err != nil {
 		c.logger.Error("could not mapped message", err, watermill.LogFields{
 			"topic": topic,

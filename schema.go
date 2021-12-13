@@ -1,7 +1,6 @@
 package sqlplugin
 
 import (
-	"database/sql"
 	"encoding/json"
 	"github.com/ThreeDotsLabs/watermill/message"
 )
@@ -9,13 +8,13 @@ import (
 type Adapter interface {
 	MappingData(topic string, msg *message.Message) (map[string]interface{}, error)
 	// UnmarshalMessage transforms the Row obtained SelectQuery a Watermill message.
-	UnmarshalMessage(rows *sql.Rows) (msg *message.Message, err error)
+	UnmarshalMessage(msg *message.Message) (map[string]interface{}, error)
 }
 
 type Schema struct{}
 
-type MsgBody struct{
-	After map[string]interface{}`json:"after"`
+type MsgBody struct {
+	After map[string]interface{} `json:"after"`
 }
 
 func (s Schema) MappingData(topic string, msg *message.Message) (map[string]interface{}, error) {
@@ -28,6 +27,8 @@ func (s Schema) MappingData(topic string, msg *message.Message) (map[string]inte
 }
 
 // UnmarshalMessage unmarshalling select query
-func (s Schema) UnmarshalMessage(*sql.Rows) (msg *message.Message, err error){
-	return msg, nil
+func (s Schema) UnmarshalMessage(msg *message.Message) (map[string]interface{}, error) {
+	msgBody := make(map[string]interface{})
+	err := json.Unmarshal(msg.Payload, &msgBody)
+	return msgBody, err
 }
