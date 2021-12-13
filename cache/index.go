@@ -22,7 +22,6 @@ func InitCache(query string, db *sqlx.DB) (*Cache, error) {
 		rows.MapScan(val)
 		cache = append(cache, val)
 	}
-
 	return &Cache{
 		Items: cache,
 		Count: len(cache),
