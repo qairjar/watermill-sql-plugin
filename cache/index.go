@@ -11,7 +11,8 @@ type Cache struct {
 }
 
 func InitCache(query string, db *sqlx.DB) (*Cache, error) {
-	rows, err := db.NamedQuery(query, nil)
+	args := make(map[string]interface{})
+	rows, err := db.NamedQuery(query, args)
 	defer rows.Close()
 	if err != nil {
 		return nil, err
