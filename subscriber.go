@@ -32,11 +32,10 @@ type Subscriber struct {
 }
 
 type Window struct {
-	InitFrom time.Time
-	Lag      time.Duration
-	windowfrom       time.Time
-	windowto       time.Time
-
+	InitFrom   time.Time
+	Lag        time.Duration
+	windowfrom time.Time
+	windowto   time.Time
 }
 
 // NewSubscriber create watermill subscriber module
@@ -114,10 +113,15 @@ func (s *Subscriber) consume(
 			s.logger.Error("QueryContext error is not nil:", err, nil)
 		}
 	}
+	query, err := s.DB.PrepareNamed(s.SelectQuery)
+	if err != nil {
+		s.logger.Error("QueryContext Rows error is not nil:", err, nil)
+		return
+	}
 	for {
 		s.Args["windowfrom"] = from
 		s.Args["windowto"] = to
-		s.query(ctx, out)
+		s.query(ctx, query, out)
 		delay := time.Until(to.Add(s.Window.Lag))
 		if delay > 0 {
 			time.Sleep(delay)
@@ -128,12 +132,7 @@ func (s *Subscriber) consume(
 }
 
 // query function for close rows connection
-func (s *Subscriber) query(ctx context.Context, out chan *message.Message) {
-	query, err := s.DB.PrepareNamed(s.SelectQuery)
-	if err != nil {
-		s.logger.Error("QueryContext Rows error is not nil:", err, nil)
-		return
-	}
+func (s *Subscriber) query(ctx context.Context, query *stdSQL.NamedStmt, out chan *message.Message) {
 	rows, err := query.Queryx(s.Args)
 	defer func(rows *stdSQL.Rows) {
 		err = rows.Close()
@@ -197,7 +196,6 @@ ResendLoop:
 			logger.Debug("Message nacked, resending", nil)
 			msg = msg.Copy()
 			msg.SetContext(msgCtx)
-
 			if s.config.ResendInterval != 0 {
 				time.Sleep(s.config.ResendInterval)
 			}
