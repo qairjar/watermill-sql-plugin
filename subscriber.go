@@ -2,8 +2,8 @@ package sqlplugin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"fmt"
 	"github.com/ThreeDotsLabs/watermill"
 	"github.com/ThreeDotsLabs/watermill-sql/pkg/sql"
 	"github.com/ThreeDotsLabs/watermill/message"
@@ -34,6 +34,9 @@ type Subscriber struct {
 type Window struct {
 	InitFrom time.Time
 	Lag      time.Duration
+	windowfrom       time.Time
+	windowto       time.Time
+
 }
 
 // NewSubscriber create watermill subscriber module
@@ -102,10 +105,8 @@ func (s *Subscriber) consume(
 	ctx context.Context,
 	out chan *message.Message,
 ) {
-	var from, to time.Time
-
-	from = s.Window.InitFrom
-
+	from := s.Window.InitFrom
+	to := time.Now()
 	if from.IsZero() && s.Cache.Count > 0 {
 		var err error
 		err, from = s.Cache.GetLastTimestamp()
@@ -114,8 +115,8 @@ func (s *Subscriber) consume(
 		}
 	}
 	for {
-		s.Args["from"] = from
-		s.Args["to"] = to
+		s.Args["windowfrom"] = from
+		s.Args["windowto"] = to
 		s.query(ctx, out)
 		delay := time.Until(to.Add(s.Window.Lag))
 		if delay > 0 {
@@ -128,7 +129,12 @@ func (s *Subscriber) consume(
 
 // query function for close rows connection
 func (s *Subscriber) query(ctx context.Context, out chan *message.Message) {
-	rows, err := s.DB.NamedQuery(s.SelectQuery, s.Args)
+	query, err := s.DB.PrepareNamed(s.SelectQuery)
+	if err != nil {
+		s.logger.Error("QueryContext Rows error is not nil:", err, nil)
+		return
+	}
+	rows, err := query.Queryx(s.Args)
 	defer func(rows *stdSQL.Rows) {
 		err = rows.Close()
 		if err != nil {
@@ -148,9 +154,11 @@ func (s *Subscriber) query(ctx context.Context, out chan *message.Message) {
 			return
 		}
 		if s.Cache.EqualMsg(m) {
-			return
+			s.logger.Error("Message is equal:", err, nil)
+			continue
 		}
-		msg := message.NewMessage(watermill.NewULID(), []byte(fmt.Sprintf("%v", m)))
+		jsonString, _ := json.Marshal(m)
+		msg := message.NewMessage(watermill.NewULID(), []byte(jsonString))
 		s.sendMessage(ctx, msg, out)
 	}
 }
